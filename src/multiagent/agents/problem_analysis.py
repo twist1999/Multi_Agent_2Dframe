@@ -1,0 +1,14 @@
+from __future__ import annotations
+
+import json
+
+from .base import BaseAgent
+
+
+class ProblemAnalysisAgent(BaseAgent):
+    name = "problem_analysis"
+    prompt_file = "problem_analysis.txt"
+
+    def run(self, user_input: str) -> dict:
+        prompt = f"{self.prompt_template}\n\nUser Input:\n{user_input}\n"
+        return self.llm_client.run_structured(self.name, prompt, self.model_config)

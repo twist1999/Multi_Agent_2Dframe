@@ -1,0 +1,3 @@
+{
+  "user_input": "Build a 2D frame with 3 bays and 2 stories, fixed supports at the base, elastic beam-column elements, downward uniform load on girders, and generate OpenSeesPy plus OpsVis code."
+}
