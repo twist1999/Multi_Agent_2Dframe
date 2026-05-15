@@ -16,6 +16,7 @@ class PipelineState:
     compiled_json: dict[str, Any] | None = None
     geometry_code: str | None = None
     complete_code: str | None = None
+    python_check_output: dict[str, Any] | None = None
     logs: list[str] = field(default_factory=list)
 
     def log(self, message: str) -> None:

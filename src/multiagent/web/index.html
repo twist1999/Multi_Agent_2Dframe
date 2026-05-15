@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Multi-Agent Structural Modeling UI</title>
+    <link rel="stylesheet" href="/app.css">
+  </head>
+  <body>
+    <div class="shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Multi-Agent Structural Modeling</p>
+          <h1>Prompt, Visualization, and Human Feedback</h1>
+          <p class="subtitle">
+            Run prompt-driven structural modeling, inspect agent outputs, and collect correct / incorrect feedback in one workspace.
+          </p>
+        </div>
+        <div class="hero-meta">
+          <span class="pill">Paper-style pipeline</span>
+          <span class="pill">Local UI</span>
+          <span class="pill">Feedback ready</span>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="card prompt-panel">
+          <div class="section-head">
+            <h2>Prompt Input</h2>
+            <span id="prompt-source" class="muted">Loading…</span>
+          </div>
+          <div class="run-banner">
+            <div>
+              <div class="field-label">Run Status</div>
+              <div id="run-status" class="run-status status-idle">Idle</div>
+            </div>
+            <p id="run-message" class="run-message">Ready to run.</p>
+          </div>
+          <label class="field-label" for="prompt-input">Describe the frame problem</label>
+          <textarea id="prompt-input" placeholder="Enter a structural modeling request..."></textarea>
+          <div class="actions">
+            <button id="submit-prompt" class="primary">Run Pipeline</button>
+            <button id="reload-state" class="ghost">Reload Workspace Outputs</button>
+          </div>
+          <p id="submit-message" class="muted"></p>
+        </section>
+
+        <section class="card stage-panel">
+          <div class="section-head">
+            <h2>Pipeline Visualization</h2>
+            <span class="muted">Workspace snapshot</span>
+          </div>
+          <p class="muted">Green indicators mean the corresponding agent has already produced an output in the current workspace snapshot.</p>
+          <div id="stage-grid" class="stage-grid"></div>
+        </section>
+
+        <section class="card prompt-history-panel">
+          <div class="section-head">
+            <h2>Prompt Run History</h2>
+            <span class="muted">Recent submitted prompts</span>
+          </div>
+          <p class="muted">
+            Each submitted prompt is stored locally so benchmark cases can be reviewed, reused, and compared with reward outcomes.
+          </p>
+          <div id="prompt-history-list" class="prompt-history-list"></div>
+        </section>
+
+        <section class="card benchmark-panel">
+          <div class="section-head">
+            <h2>Benchmark Batch Runner</h2>
+            <span class="muted">30 randomized prompt cases</span>
+          </div>
+          <div class="run-banner">
+            <div>
+              <div class="field-label">Benchmark Status</div>
+              <div id="benchmark-status" class="run-status status-idle">Idle</div>
+            </div>
+            <p id="benchmark-message" class="run-message">Ready to run benchmark cases.</p>
+          </div>
+          <div class="actions">
+            <button id="run-benchmark" class="primary">Run 30 Prompt Cases</button>
+            <button id="retry-failed-benchmark" class="ghost">Retry Failed Cases</button>
+            <button id="run-review-set" class="ghost">Run Review Set</button>
+          </div>
+          <div id="benchmark-case-list" class="benchmark-case-list"></div>
+        </section>
+
+        <section class="card viewer-panel">
+          <div class="section-head">
+            <h2>Output Viewer</h2>
+            <span class="muted">Node and element outputs</span>
+          </div>
+          <div class="viewer-layout">
+            <div class="viewer-left">
+              <div class="tabs vertical-tabs">
+                <button class="tab active" data-view="node_output">Node Agent Output</button>
+                <button class="tab" data-view="element_output">Element Agent Output</button>
+                <button class="tab" data-view="complete_code">Complete Code</button>
+              </div>
+              <pre id="viewer" class="viewer compact-viewer"></pre>
+            </div>
+            <div class="viewer-right">
+              <div class="run-banner compact-run-banner">
+                <div>
+                  <div class="field-label">Visualization Status</div>
+                  <div id="visualization-status" class="run-status status-succeeded">Direct Render</div>
+                </div>
+                <p id="visualization-message" class="run-message">Node and element views are rendered directly in the browser from agent JSON outputs.</p>
+              </div>
+              <div class="stacked-visualization">
+                <section class="mini-visual-panel">
+                  <div class="mini-visual-head">Node Visualization</div>
+                  <div class="mini-visual-shell">
+                    <svg id="node-visualization-svg" class="model-visualization-svg" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet"></svg>
+                    <div id="node-visualization-empty" class="model-visualization-empty">
+                      No node visualization has been generated yet.
+                    </div>
+                  </div>
+                </section>
+                <section class="mini-visual-panel">
+                  <div class="mini-visual-head">Element Visualization</div>
+                  <div class="mini-visual-shell">
+                    <svg id="element-visualization-svg" class="model-visualization-svg" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet"></svg>
+                    <div id="element-visualization-empty" class="model-visualization-empty">
+                      No element visualization has been generated yet.
+                    </div>
+                  </div>
+                </section>
+              </div>
+              <section class="selection-panel">
+                <div class="section-head">
+                  <h2>Selection Reanalysis Prompt</h2>
+                  <span class="muted">Click a node or element</span>
+                </div>
+                <p id="selection-message" class="muted">
+                  Click a node or element on the right to generate a targeted reanalysis prompt.
+                </p>
+                <textarea id="selection-prompt" class="notes selection-prompt" readonly placeholder="A targeted retry prompt will appear here..."></textarea>
+                <div class="actions">
+                  <button id="use-selection-prompt" class="ghost">Use In Prompt Box</button>
+                  <button id="run-selection-reanalysis" class="primary">Run Reanalysis</button>
+                </div>
+              </section>
+            </div>
+          </div>
+        </section>
+
+        <section class="card rl-panel">
+          <div class="section-head">
+            <h2>RL-Style Optimization</h2>
+            <span id="rl-db-path" class="muted">Reward database</span>
+          </div>
+          <p class="muted">
+            Rule-based rewards and policy recommendations for API-driven orchestration. This records signals for retry, repair, and later policy tuning.
+          </p>
+          <div class="rl-grid">
+            <div class="rl-metric">
+              <span class="field-label">Total Reward</span>
+              <strong id="rl-total-reward">0.00</strong>
+            </div>
+            <div class="rl-metric">
+              <span class="field-label">Error Type</span>
+              <strong id="rl-error-type">none</strong>
+            </div>
+            <div class="rl-metric wide">
+              <span class="field-label">Policy Action</span>
+              <strong id="rl-policy-action">observe_more</strong>
+              <p id="rl-policy-reason" class="muted"></p>
+            </div>
+          </div>
+          <div class="rl-components">
+            <div class="field-label">Reward Components</div>
+            <div id="rl-component-list" class="rl-component-list"></div>
+          </div>
+        </section>
+
+        <section class="card feedback-panel">
+          <div class="section-head">
+            <h2>Human Feedback</h2>
+            <span class="muted">Reward / penalty signal</span>
+          </div>
+          <p class="feedback-copy">
+            Mark the current result as correct or incorrect to collect feedback for future reward and repair workflows.
+          </p>
+          <div class="feedback-actions">
+            <button id="mark-correct" class="success">Correct</button>
+            <button id="mark-incorrect" class="danger">Incorrect</button>
+          </div>
+          <label class="field-label" for="feedback-notes">Notes</label>
+          <textarea id="feedback-notes" class="notes" placeholder="Why is this output correct or incorrect?"></textarea>
+          <p id="feedback-message" class="muted"></p>
+        </section>
+
+        <section class="card execution-panel">
+          <div class="section-head">
+            <h2>Generated Code Execution</h2>
+            <span class="muted">Run `outputs/complete_code.py` in ops venv</span>
+          </div>
+          <div class="run-banner execution-banner">
+            <div>
+              <div class="field-label">Execution Status</div>
+              <div id="execution-status" class="run-status status-idle">Idle</div>
+            </div>
+            <p id="execution-message" class="run-message">Ready to execute generated code.</p>
+          </div>
+          <div class="actions">
+            <button id="run-generated-code" class="primary">Run Generated Code</button>
+          </div>
+          <div class="execution-grid">
+            <div>
+              <div class="field-label">Stdout</div>
+              <pre id="execution-stdout" class="viewer execution-viewer"></pre>
+            </div>
+            <div>
+              <div class="field-label">Stderr</div>
+              <pre id="execution-stderr" class="viewer execution-viewer"></pre>
+            </div>
+          </div>
+          <div class="python-check-panel">
+            <div class="section-head">
+              <h2>Python Check Agent Diagnosis</h2>
+              <span class="muted">Automatic execution-failure analysis</span>
+            </div>
+            <pre id="python-check-viewer" class="viewer execution-viewer"></pre>
+          </div>
+          <div class="opsvis-panel">
+            <div class="section-head">
+              <h2>Opsvis Section Force Diagrams</h2>
+              <span class="muted">Axial, shear, and bending moment</span>
+            </div>
+            <div class="run-banner execution-banner">
+              <div>
+                <div class="field-label">Opsvis Status</div>
+                <div id="opsvis-status" class="run-status status-idle">Idle</div>
+              </div>
+              <p id="opsvis-message" class="run-message">Run generated code to render section-force diagrams.</p>
+            </div>
+            <div class="diagram-grid">
+              <section class="diagram-card">
+                <div class="mini-visual-head">Axial Force</div>
+                <div class="diagram-shell">
+                  <img id="axial-diagram-image" class="diagram-image" alt="Axial force diagram">
+                  <div id="axial-diagram-empty" class="model-visualization-empty">No axial force diagram has been generated yet.</div>
+                </div>
+              </section>
+              <section class="diagram-card">
+                <div class="mini-visual-head">Shear Force</div>
+                <div class="diagram-shell">
+                  <img id="shear-diagram-image" class="diagram-image" alt="Shear force diagram">
+                  <div id="shear-diagram-empty" class="model-visualization-empty">No shear force diagram has been generated yet.</div>
+                </div>
+              </section>
+              <section class="diagram-card">
+                <div class="mini-visual-head">Bending Moment</div>
+                <div class="diagram-shell">
+                  <img id="moment-diagram-image" class="diagram-image" alt="Bending moment diagram">
+                  <div id="moment-diagram-empty" class="model-visualization-empty">No bending moment diagram has been generated yet.</div>
+                </div>
+              </section>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

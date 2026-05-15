@@ -19,6 +19,7 @@ AGENT_OUTPUT_KEYS: dict[str, str] = {
     "load_assignment": "load_output",
     "geometry_code_translator": "geometry_code",
     "complete_code_generator": "complete_code",
+    "python_check_agent": "python_check_output",
 }
 
 
@@ -27,6 +28,16 @@ ElementType = Literal["column", "beam", "brace", "wall", "truss", "other"]
 ConstraintType = Literal["free", "fixed", "pinned", "roller", "custom"]
 LoadTargetType = Literal["element", "node"]
 LoadType = Literal["uniform", "point", "nodal", "moment", "temperature", "other"]
+ExecutionErrorType = Literal[
+    "missing_dependency",
+    "syntax_error",
+    "import_error",
+    "runtime_api_error",
+    "invalid_model_topology",
+    "data_contract_error",
+    "timeout",
+    "unknown",
+]
 
 
 class GeometrySpec(TypedDict, total=False):
@@ -200,6 +211,27 @@ class CompiledModel(TypedDict, total=False):
     loads: LoadOutput
 
 
+class ExecutionReport(TypedDict, total=False):
+    python_path: str
+    returncode: int | None
+    stdout: str
+    stderr: str
+    started_at: str
+    finished_at: str
+
+
+class PythonCheckOutput(TypedDict, total=False):
+    schema_version: str
+    error_type: ExecutionErrorType
+    root_cause: str
+    responsible_stage: str
+    confidence: float
+    repair_action: str
+    should_retry: bool
+    suggested_target_agent: str
+    notes: list[str]
+
+
 class AgentContract(TypedDict):
     input_keys: list[str]
     output_key: str
@@ -250,5 +282,16 @@ AGENT_CONTRACTS: dict[str, AgentContract] = {
         "input_keys": ["compiled_model", AGENT_OUTPUT_KEYS["geometry_code_translator"]],
         "output_key": AGENT_OUTPUT_KEYS["complete_code_generator"],
         "output_description": "Complete executable OpenSeesPy script.",
+    },
+    "python_check_agent": {
+        "input_keys": [
+            "user_input",
+            "compiled_model",
+            AGENT_OUTPUT_KEYS["geometry_code_translator"],
+            AGENT_OUTPUT_KEYS["complete_code_generator"],
+            "execution_report",
+        ],
+        "output_key": AGENT_OUTPUT_KEYS["python_check_agent"],
+        "output_description": "Diagnosis of generated-code execution failures with repair guidance.",
     },
 }
