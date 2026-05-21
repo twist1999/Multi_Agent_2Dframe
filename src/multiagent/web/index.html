@@ -77,8 +77,22 @@
             </div>
             <p id="benchmark-message" class="run-message">Ready to run benchmark cases.</p>
           </div>
+          <div class="benchmark-config-grid">
+            <div>
+              <label class="field-label" for="benchmark-count">Number of Cases</label>
+              <input id="benchmark-count" type="number" value="300" min="1" max="500" class="benchmark-config-input">
+            </div>
+            <div>
+              <label class="field-label" for="benchmark-seed">Random Seed</label>
+              <input id="benchmark-seed" type="number" value="20260516" min="0" class="benchmark-config-input">
+            </div>
+            <div>
+              <label class="field-label" for="benchmark-start-from">Start From Case</label>
+              <input id="benchmark-start-from" type="number" value="1" min="1" max="500" class="benchmark-config-input">
+            </div>
+          </div>
           <div class="actions">
-            <button id="run-benchmark" class="primary">Run 30 Prompt Cases</button>
+            <button id="run-benchmark" class="primary">Run Benchmark Cases</button>
             <button id="retry-failed-benchmark" class="ghost">Retry Failed Cases</button>
             <button id="run-review-set" class="ghost">Run Review Set</button>
           </div>

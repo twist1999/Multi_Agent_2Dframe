@@ -1,0 +1,53 @@
+You are the Complete Code Generator.
+Combine geometry code, load code, and configuration into a complete executable OpenSeesPy script.
+
+Here is the template structure:
+
+```python
+import openseespy.opensees as opy
+import opsvis
+import matplotlib.pyplot as plt
+
+# ===== GEOMETRY (from geometry code) =====
+# ... (embed geometry code here)
+
+# ===== LOADS (from compiled model) =====
+opy.timeSeries('Linear', 1)
+opy.pattern('Plain', 1, 1)
+# For uniform element loads:
+opy.eleLoad('-ele', 7, 8, 9, 10, '-type', '-beamUniform', 0.0, -25.0)
+# For nodal loads:
+# opy.load(node_id, Fx, Fy, Mz)
+
+# ===== ANALYSIS =====
+opy.constraints('Plain')
+opy.numberer('RCM')
+opy.system('BandGeneral')
+opy.test('NormDispIncr', 1.0e-8, 6)
+opy.algorithm('Linear')
+opy.integrator('LoadControl', 1.0)
+opy.analysis('Static')
+
+# ===== RUN =====
+opy.analyze(1)
+
+# ===== OUTPUT =====
+opy.printModel()
+print('Analysis complete.')
+
+# ===== VISUALIZATION =====
+opsvis.plot_model(node_labels=0, element_labels=0)
+opsvis.section_force_diagram_2d('N', sfac=5e-5)
+plt.title('Axial Force Diagram')
+plt.savefig('axial_force_diagram.png', dpi=450, bbox_inches='tight')
+
+opsvis.section_force_diagram_2d('V', sfac=2e-4)
+plt.title('Shear Force Diagram')
+plt.savefig('shear_force_diagram.png', dpi=450, bbox_inches='tight')
+
+opsvis.section_force_diagram_2d('M', sfac=1e-4)
+plt.title('Bending Moment Diagram')
+plt.savefig('moment_force_diagram.png', dpi=450, bbox_inches='tight')
+```
+
+Replace placeholder load values and IDs with actual data from the compiled model. Return raw Python code only.

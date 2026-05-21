@@ -422,6 +422,34 @@ button.danger {
   grid-column: 1 / -1;
 }
 
+.benchmark-config-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 14px;
+  margin-top: 12px;
+}
+
+.benchmark-config-grid .field-label {
+  margin-bottom: 4px;
+}
+
+.benchmark-config-input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-strong);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 0.875rem;
+  padding: 8px 10px;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.benchmark-config-input:focus {
+  border-color: var(--brand);
+}
+
 .prompt-history-list {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));

@@ -251,7 +251,8 @@ function renderBenchmark(benchmark) {
 
   const button = document.getElementById("run-benchmark");
   button.disabled = status === "running";
-  button.textContent = status === "running" ? "Running Benchmark..." : "Run 30 Prompt Cases";
+  const count = document.getElementById("benchmark-count").value || "30";
+  button.textContent = status === "running" ? "Running Benchmark..." : `Run ${count} Prompt Cases`;
   const retryButton = document.getElementById("retry-failed-benchmark");
   retryButton.disabled = status === "running";
   retryButton.textContent = status === "running" ? "Retry Waiting..." : "Retry Failed Cases";
@@ -914,9 +915,12 @@ async function runGeneratedCode() {
 }
 
 async function runBenchmark() {
+  const count = Number(document.getElementById("benchmark-count").value) || 30;
+  const seed = Number(document.getElementById("benchmark-seed").value) || 20260516;
+  const start_from = Number(document.getElementById("benchmark-start-from").value) || 1;
   const payload = await request("/api/run-benchmark", {
     method: "POST",
-    body: JSON.stringify({ count: 30, seed: 20260506 }),
+    body: JSON.stringify({ count, seed, start_from }),
   });
   if (payload.state) {
     hydrateState(payload.state);
@@ -987,6 +991,16 @@ function bindEvents() {
       document.getElementById("feedback-message").textContent = error.message;
     });
   });
+
+  function updateBenchmarkButton() {
+    const btn = document.getElementById("run-benchmark");
+    if (btn.disabled) return;
+    const cnt = document.getElementById("benchmark-count").value || "30";
+    btn.textContent = `Run ${cnt} Prompt Cases`;
+  }
+  document.getElementById("benchmark-count").addEventListener("input", updateBenchmarkButton);
+  document.getElementById("benchmark-start-from").addEventListener("input", updateBenchmarkButton);
+  updateBenchmarkButton();
 
   document.getElementById("run-benchmark").addEventListener("click", () => {
     runBenchmark().catch((error) => {

@@ -36,6 +36,16 @@ class RagConfig:
 
 
 @dataclass
+class RLConfig:
+    enabled: bool = field(default_factory=lambda: _env_flag("MULTIAGENT_RL_ENABLED", False))
+    epsilon: float = field(default_factory=lambda: float(os.getenv("MULTIAGENT_RL_EPSILON", "0.1")))
+    alpha: float = field(default_factory=lambda: float(os.getenv("MULTIAGENT_RL_ALPHA", "0.1")))
+    buffer_size: int = field(default_factory=lambda: int(os.getenv("MULTIAGENT_RL_BUFFER_SIZE", "200")))
+    use_bandit: bool = field(default_factory=lambda: _env_flag("MULTIAGENT_RL_BANDIT", False))
+    use_few_shot: bool = field(default_factory=lambda: _env_flag("MULTIAGENT_RL_FEWSHOT", False))
+
+
+@dataclass
 class PipelineConfig:
     max_retries_analysis_planning: int = 5
     max_retries_geometry: int = 5
@@ -51,6 +61,7 @@ class PipelineConfig:
     complete_code_generator: AgentModelConfig = field(default_factory=AgentModelConfig)
     python_check_agent: AgentModelConfig = field(default_factory=AgentModelConfig)
     rag: RagConfig = field(default_factory=RagConfig)
+    rl: RLConfig = field(default_factory=RLConfig)
 
 
 def ensure_directories() -> None:

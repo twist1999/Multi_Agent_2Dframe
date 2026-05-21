@@ -124,6 +124,27 @@ class RLLogger:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_experiences (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    agent_name TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    prompt_hash TEXT NOT NULL,
+                    prompt_variant TEXT DEFAULT 'default',
+                    input_signature TEXT NOT NULL,
+                    reward REAL NOT NULL DEFAULT 0.0,
+                    base_success REAL DEFAULT 0.0,
+                    validation_pass REAL DEFAULT 0.0,
+                    downstream_feedback REAL DEFAULT 0.0,
+                    error_categories TEXT,
+                    success INTEGER NOT NULL DEFAULT 0,
+                    llm_input TEXT,
+                    llm_output TEXT,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
 
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, column_type: str) -> None:
         columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
@@ -497,3 +518,123 @@ class RLLogger:
             if row["status"] == "succeeded" or has_success(row["case_id"]):
                 selected.append(dict(row))
         return selected
+
+    def insert_agent_experience(
+        self,
+        *,
+        agent_name: str,
+        run_id: str,
+        prompt_hash: str = "",
+        prompt_variant: str = "default",
+        input_signature: str = "",
+        reward: float = 0.0,
+        base_success: float = 0.0,
+        validation_pass: float = 0.0,
+        downstream_feedback: float = 0.0,
+        error_categories: list[str] | None = None,
+        success: bool = False,
+        llm_input: str | None = None,
+        llm_output: str | None = None,
+    ) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO agent_experiences (
+                    agent_name, run_id, prompt_hash, prompt_variant, input_signature,
+                    reward, base_success, validation_pass, downstream_feedback,
+                    error_categories, success, llm_input, llm_output, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    agent_name,
+                    run_id,
+                    prompt_hash,
+                    prompt_variant,
+                    input_signature,
+                    reward,
+                    base_success,
+                    validation_pass,
+                    downstream_feedback,
+                    json.dumps(error_categories or [], ensure_ascii=False),
+                    1 if success else 0,
+                    llm_input or "",
+                    llm_output or "",
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+
+    def agent_experiences(
+        self,
+        agent_name: str | None = None,
+        input_signature: str | None = None,
+        success_only: bool = True,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        clauses = []
+        params: list[Any] = []
+        if agent_name:
+            clauses.append("agent_name = ?")
+            params.append(agent_name)
+        if input_signature:
+            clauses.append("input_signature = ?")
+            params.append(input_signature)
+        if success_only:
+            clauses.append("success = 1")
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        query = (
+            f"SELECT * FROM agent_experiences {where} ORDER BY reward DESC, created_at DESC LIMIT ? OFFSET ?"
+        )
+        params.extend([limit, offset])
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(query, params).fetchall()
+        result = [dict(row) for row in rows]
+        for row in result:
+            try:
+                row["error_categories"] = json.loads(row.get("error_categories", "[]"))
+            except (json.JSONDecodeError, TypeError):
+                row["error_categories"] = []
+        return result
+
+    def agent_reward_summary(self, agent_name: str | None = None) -> list[dict[str, Any]]:
+        group = "agent_name" if agent_name is None else None
+        if group:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    """
+                    SELECT agent_name,
+                           COUNT(*) as total_runs,
+                           SUM(success) as success_count,
+                           ROUND(AVG(reward), 4) as avg_reward,
+                           ROUND(AVG(base_success), 4) as avg_base,
+                           ROUND(AVG(validation_pass), 4) as avg_validation,
+                           ROUND(AVG(downstream_feedback), 4) as avg_downstream,
+                           COUNT(DISTINCT prompt_variant) as variant_count
+                    FROM agent_experiences
+                    GROUP BY agent_name
+                    ORDER BY avg_reward ASC
+                    """
+                ).fetchall()
+        else:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    """
+                    SELECT agent_name,
+                           COUNT(*) as total_runs,
+                           SUM(success) as success_count,
+                           ROUND(AVG(reward), 4) as avg_reward,
+                           ROUND(AVG(base_success), 4) as avg_base,
+                           ROUND(AVG(validation_pass), 4) as avg_validation,
+                           ROUND(AVG(downstream_feedback), 4) as avg_downstream,
+                           COUNT(DISTINCT prompt_variant) as variant_count
+                    FROM agent_experiences
+                    WHERE agent_name = ?
+                    GROUP BY agent_name
+                    """,
+                    (agent_name,),
+                ).fetchall()
+        return [dict(row) for row in rows]

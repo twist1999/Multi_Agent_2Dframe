@@ -10,9 +10,10 @@ class ElementAgent(BaseAgent):
     name = "element_agent"
     prompt_file = "element_agent.txt"
 
-    def run(self, problem_analysis: dict, construction_plan: dict, repair_hint: str | None = None) -> dict:
+    def run(self, problem_analysis: dict, construction_plan: dict, repair_hint: str | None = None, prompt_override: str | None = None) -> dict:
+        base = prompt_override if prompt_override else self.prompt_template
         prompt = (
-            f"{self.prompt_template}\n\n"
+            f"{base}\n\n"
             f"Problem Analysis JSON:\n{json.dumps(problem_analysis, ensure_ascii=False, indent=2)}\n\n"
             f"Construction Plan JSON:\n{json.dumps(construction_plan, ensure_ascii=False, indent=2)}\n"
         )

@@ -22,6 +22,7 @@ from .pipeline import StructuralModelingPipeline
 from .rl.logger import RLLogger
 from .rl.policy import RulePolicy
 from .rl.reward import RewardScorer
+from .rl.prompt_optimizer import MultiAgentOptimizer
 
 
 WEB_ROOT = PROJECT_ROOT / "src" / "multiagent" / "web"
@@ -618,6 +619,17 @@ def _build_rl_snapshot(outputs: dict | None = None) -> dict:
     }
 
 
+def _build_agent_reward_summary() -> dict:
+    try:
+        summary = RLLogger().agent_reward_summary()
+        return {
+            "agents": summary,
+            "total_experiences": sum(int(r.get("total_runs", 0)) for r in summary),
+        }
+    except Exception:
+        return {"agents": [], "total_experiences": 0}
+
+
 def _record_rl_event(event_name: str, metadata: dict | None = None) -> dict:
     current_prompt = _read_json(CURRENT_PROMPT_FILE) or {}
     prompt = str(current_prompt.get("prompt", ""))
@@ -676,6 +688,11 @@ def _run_benchmark_cases(
         error=None,
     )
     logger = RLLogger()
+    config = config_factory()
+    rl_optimizer = MultiAgentOptimizer(
+        epsilon=config.rl.epsilon,
+        alpha=config.rl.alpha,
+    ) if config.rl.enabled else None
     for index, case in enumerate(cases, start=1):
         started_at = datetime.now(timezone.utc).isoformat()
         retry_from_case_id = getattr(case, "retry_from_case_id", None)
@@ -700,21 +717,93 @@ def _run_benchmark_cases(
         token_records: list[dict] = []
         token = set_token_usage_callback(token_records.append)
         try:
-            StructuralModelingPipeline(config_factory()).run(case.prompt)
-        except Exception as exc:
-            traceback_text = traceback.format_exc()
-            reset_token_usage_callback(token)
-            artifact_dir = _archive_benchmark_artifacts(case.case_id)
+            try:
+                pipeline = StructuralModelingPipeline(config_factory(), optimizer=rl_optimizer)
+                pipeline.run(case.prompt)
+            except Exception as exc:
+                traceback_text = traceback.format_exc()
+                reset_token_usage_callback(token)
+                artifact_dir = _archive_benchmark_artifacts(case.case_id)
+                _update_run_state(
+                    status="failed",
+                    message=f"{message_prefix} case {index}/{len(cases)} failed.",
+                    finished_at=datetime.now(timezone.utc).isoformat(),
+                    error=str(exc),
+                )
+                logger.replace_benchmark_token_usage(case_id=case.case_id, records=token_records)
+                snapshot = _record_rl_event(
+                    "benchmark_case_failed",
+                    {"case_id": case.case_id, "error": str(exc), "traceback": traceback_text},
+                )
+                if rl_optimizer and config.rl.enabled:
+                    try:
+                        pipeline.decompose_and_record(
+                            outputs=_collect_outputs(),
+                            run_id=case.case_id,
+                            execution_state=_snapshot_execution_state(),
+                        )
+                    except Exception:
+                        pass
+                logger.upsert_benchmark_case(
+                    case_id=case.case_id,
+                    batch_id=batch_id,
+                    prompt=case.prompt,
+                    status="failed",
+                    started_at=started_at,
+                    finished_at=datetime.now(timezone.utc).isoformat(),
+                    error=f"{str(exc)}\n\n{traceback_text}",
+                    token_usage=_sum_token_usage(token_records),
+                    reward=float(snapshot["reward"].get("total_reward", 0.0)),
+                    policy_action=str(snapshot["policy_action"].get("action_type", "")),
+                    retry_from_case_id=retry_from_case_id,
+                    artifact_dir=str(artifact_dir),
+                )
+            else:
+                reset_token_usage_callback(token)
+                logger.replace_benchmark_token_usage(case_id=case.case_id, records=token_records)
+                artifact_dir = _archive_benchmark_artifacts(case.case_id)
+                _update_run_state(
+                    status="succeeded",
+                    message=f"{message_prefix} case {index}/{len(cases)} completed.",
+                    finished_at=datetime.now(timezone.utc).isoformat(),
+                    error=None,
+                )
+                snapshot = _record_rl_event("benchmark_case_succeeded", {"case_id": case.case_id})
+                if rl_optimizer and config.rl.enabled:
+                    try:
+                        pipeline.decompose_and_record(
+                            outputs=_collect_outputs(),
+                            run_id=case.case_id,
+                            execution_state=_snapshot_execution_state(),
+                        )
+                    except Exception:
+                        pass
+                logger.upsert_benchmark_case(
+                    case_id=case.case_id,
+                    batch_id=batch_id,
+                    prompt=case.prompt,
+                    status="succeeded",
+                    started_at=started_at,
+                    finished_at=datetime.now(timezone.utc).isoformat(),
+                    error=None,
+                    token_usage=_sum_token_usage(token_records),
+                    reward=float(snapshot["reward"].get("total_reward", 0.0)),
+                    policy_action=str(snapshot["policy_action"].get("action_type", "")),
+                    retry_from_case_id=retry_from_case_id,
+                    artifact_dir=str(artifact_dir),
+                )
+        except Exception as post_exc:
+            post_tb = traceback.format_exc()
+            try:
+                reset_token_usage_callback(token)
+            except Exception:
+                pass
+            logger.replace_benchmark_token_usage(case_id=case.case_id, records=token_records)
             _update_run_state(
                 status="failed",
-                message=f"{message_prefix} case {index}/{len(cases)} failed.",
+                message=f"{message_prefix} case {index}/{len(cases)} failed during post-processing.",
                 finished_at=datetime.now(timezone.utc).isoformat(),
-                error=str(exc),
-            )
-            logger.replace_benchmark_token_usage(case_id=case.case_id, records=token_records)
-            snapshot = _record_rl_event(
-                "benchmark_case_failed",
-                {"case_id": case.case_id, "error": str(exc), "traceback": traceback_text},
+                error=str(post_exc),
             )
             logger.upsert_benchmark_case(
                 case_id=case.case_id,
@@ -723,37 +812,9 @@ def _run_benchmark_cases(
                 status="failed",
                 started_at=started_at,
                 finished_at=datetime.now(timezone.utc).isoformat(),
-                error=f"{str(exc)}\n\n{traceback_text}",
+                error=f"Post-processing error: {post_exc}\n\n{post_tb}",
                 token_usage=_sum_token_usage(token_records),
-                reward=float(snapshot["reward"].get("total_reward", 0.0)),
-                policy_action=str(snapshot["policy_action"].get("action_type", "")),
                 retry_from_case_id=retry_from_case_id,
-                artifact_dir=str(artifact_dir),
-            )
-        else:
-            reset_token_usage_callback(token)
-            logger.replace_benchmark_token_usage(case_id=case.case_id, records=token_records)
-            artifact_dir = _archive_benchmark_artifacts(case.case_id)
-            _update_run_state(
-                status="succeeded",
-                message=f"{message_prefix} case {index}/{len(cases)} completed.",
-                finished_at=datetime.now(timezone.utc).isoformat(),
-                error=None,
-            )
-            snapshot = _record_rl_event("benchmark_case_succeeded", {"case_id": case.case_id})
-            logger.upsert_benchmark_case(
-                case_id=case.case_id,
-                batch_id=batch_id,
-                prompt=case.prompt,
-                status="succeeded",
-                started_at=started_at,
-                finished_at=datetime.now(timezone.utc).isoformat(),
-                error=None,
-                token_usage=_sum_token_usage(token_records),
-                reward=float(snapshot["reward"].get("total_reward", 0.0)),
-                policy_action=str(snapshot["policy_action"].get("action_type", "")),
-                retry_from_case_id=retry_from_case_id,
-                artifact_dir=str(artifact_dir),
             )
         _update_benchmark_state(completed=index)
     _update_benchmark_state(
@@ -765,7 +826,7 @@ def _run_benchmark_cases(
     )
 
 
-def _run_benchmark_async(count: int = 30, seed: int = 20260506) -> None:
+def _run_benchmark_async(count: int = 30, seed: int = 20260506, start_from: int = 1) -> None:
     if not _has_llm_api_key():
         _update_benchmark_state(
             status="failed",
@@ -774,7 +835,7 @@ def _run_benchmark_async(count: int = 30, seed: int = 20260506) -> None:
             finished_at=datetime.now(timezone.utc).isoformat(),
         )
         return
-    cases = generate_benchmark_cases(count=count, seed=seed)
+    cases = generate_benchmark_cases(count=count, seed=seed, start_from=start_from)
     _run_benchmark_cases(cases, message_prefix="Benchmark batch")
 
 
@@ -1189,6 +1250,7 @@ def build_workspace_state() -> dict:
         },
         "outputs": outputs,
         "rl": _build_rl_snapshot(outputs),
+        "agent_rewards": _build_agent_reward_summary(),
         "benchmark": {
             **_snapshot_benchmark_state(),
             "cases": RLLogger().benchmark_cases(),
@@ -1278,6 +1340,24 @@ class MultiAgentWebHandler(BaseHTTPRequestHandler):
         }
         if parsed.path == "/api/state":
             self._send_json(build_workspace_state())
+            return
+        if parsed.path == "/api/agent-rewards":
+            try:
+                query = parse_qs(parsed.query)
+                agent_filter = str((query.get("agent") or [""])[0]).strip() or None
+                summary = RLLogger().agent_reward_summary(agent_filter)
+                experiences = RLLogger().agent_experiences(
+                    agent_name=agent_filter,
+                    success_only=False,
+                    limit=100,
+                )
+                self._send_json({
+                    "ok": True,
+                    "summary": summary,
+                    "recent_experiences": experiences,
+                })
+            except Exception as exc:
+                self._send_json({"ok": False, "message": str(exc)})
             return
         if parsed.path == "/api/benchmark-case-artifacts":
             query = parse_qs(parsed.query)
@@ -1462,7 +1542,8 @@ class MultiAgentWebHandler(BaseHTTPRequestHandler):
                 return
             count = int(payload.get("count") or 30)
             seed = int(payload.get("seed") or 20260506)
-            worker = threading.Thread(target=_run_benchmark_async, args=(count, seed), daemon=True)
+            start_from = int(payload.get("start_from") or 1)
+            worker = threading.Thread(target=_run_benchmark_async, args=(count, seed, start_from), daemon=True)
             worker.start()
             self._send_json(
                 {
