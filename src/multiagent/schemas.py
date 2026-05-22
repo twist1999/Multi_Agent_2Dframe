@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Literal, TypedDict
+from dataclasses import dataclass, field
+from typing import Any, Literal, TypedDict
 
 
 @dataclass
 class ValidationResult:
     ok: bool
     errors: list[str]
+    warnings: list[str] = field(default_factory=list)
+    details: dict[str, Any] = field(default_factory=dict)
 
 
 # Canonical top-level contract names shared by all agents.

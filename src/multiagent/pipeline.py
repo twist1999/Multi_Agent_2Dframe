@@ -20,7 +20,13 @@ from .rl.agent_reward import AgentRewardDecomposer, classify_checkpoint_errors
 from .rl.repair import build_repair_hint
 from .state import PipelineState
 from .utils import dump_json, dump_text
-from .validators.checkpoints import validate_analysis_planning, validate_geometry
+from .validators.checkpoints import (
+    _error_is_element_fault,
+    _error_is_node_fault,
+    validate_analysis_planning,
+    validate_geometry,
+    validate_geometry_consistency,
+)
 
 
 class StructuralModelingPipeline:
@@ -51,15 +57,23 @@ class StructuralModelingPipeline:
         self._reward_decomposer: Any = None
         self._checkpoint_errors: dict[str, list[str]] = {}
         self._variant_tracker: dict[str, str] = {}  # agent_name -> variant_id
+        self._consistency_details: dict[str, Any] | None = None
 
     @property
     def optimizer(self):
         if self._optimizer is None:
             from .rl.prompt_optimizer import MultiAgentOptimizer
-            self._optimizer = MultiAgentOptimizer(
-                epsilon=self.config.rl.epsilon,
-                alpha=self.config.rl.alpha,
-            )
+            if self.config.rl.use_presets:
+                self._optimizer = MultiAgentOptimizer.from_presets(
+                    epsilon=self.config.rl.epsilon,
+                    alpha=self.config.rl.alpha,
+                    presets_path=self.config.rl.presets_path,
+                )
+            else:
+                self._optimizer = MultiAgentOptimizer(
+                    epsilon=self.config.rl.epsilon,
+                    alpha=self.config.rl.alpha,
+                )
         return self._optimizer
 
     @property
@@ -123,6 +137,7 @@ class StructuralModelingPipeline:
             analysis_errors=self._checkpoint_errors.get("analysis_planning"),
             geometry_errors=self._checkpoint_errors.get("geometry"),
             code_errors=self._checkpoint_errors.get("code_translation"),
+            consistency_errors=self._checkpoint_errors.get("geometry_consistency"),
         )
         agent_rewards = self.reward_decomposer.decompose(
             outputs=outputs,
@@ -142,6 +157,7 @@ class StructuralModelingPipeline:
     def run(self, user_input: str) -> PipelineState:
         self._checkpoint_errors = {}
         self._variant_tracker = {}
+        self._consistency_details = None
         state = PipelineState(user_input=user_input)
         state.log("Starting analysis and planning module.")
         self._run_analysis_and_planning(state)
@@ -198,18 +214,24 @@ class StructuralModelingPipeline:
         assert state.problem_analysis is not None
         assert state.construction_plan is not None
         repair_hint: str | None = None
+        node_repair_hint: str | None = None
+        elem_repair_hint: str | None = None
         all_errors: list[str] = []
+        all_consistency_errors: list[str] = []
         n_variant = self._select_variant("node_agent")
         e_variant = self._select_variant("element_agent")
         for attempt in range(1, self.config.max_retries_geometry + 1):
             state.log(f"Geometry assembly attempt {attempt}.")
             try:
+                # Allow per-agent targeted repair hints
+                node_hint = node_repair_hint or repair_hint
+                elem_hint = elem_repair_hint or repair_hint
                 node_output = self.node_agent.run(
-                    state.problem_analysis, state.construction_plan, repair_hint=repair_hint,
+                    state.problem_analysis, state.construction_plan, repair_hint=node_hint,
                     prompt_override=n_variant.load() if n_variant else None,
                 )
                 element_output = self.element_agent.run(
-                    state.problem_analysis, state.construction_plan, repair_hint=repair_hint,
+                    state.problem_analysis, state.construction_plan, repair_hint=elem_hint,
                     prompt_override=e_variant.load() if e_variant else None,
                 )
             except Exception as exc:
@@ -220,21 +242,74 @@ class StructuralModelingPipeline:
                     continue
                 self._checkpoint_errors["geometry"] = all_errors
                 raise RuntimeError(f"Geometry assembly API call failed after {attempt} retries.") from exc
+
+            # Phase 1: Basic schema validation
             result = validate_geometry(node_output, element_output)
-            if result.ok:
-                state.node_output = node_output
-                state.element_output = element_output
-                state.mapped_geometry = map_connectivity(node_output, element_output)
-                self._checkpoint_errors["geometry"] = all_errors
-                return
-            state.log("Geometry checkpoint failed: " + "; ".join(result.errors))
-            all_errors.extend(result.errors)
-            repair_hint = build_repair_hint("geometry_assembly", result.errors, attempt)
-            if self.config.write_outputs:
-                dump_json(self.config.output_dir / "debug_node_output.json", node_output)
-                dump_json(self.config.output_dir / "debug_element_output.json", element_output)
-                dump_text(self.config.output_dir / "pipeline.log", "\n".join(state.logs))
+            if not result.ok:
+                state.log("Geometry checkpoint failed: " + "; ".join(result.errors))
+                all_errors.extend(result.errors)
+                repair_hint = build_repair_hint("geometry_assembly", result.errors, attempt)
+                node_repair_hint = None
+                elem_repair_hint = None
+                if self.config.write_outputs:
+                    dump_json(self.config.output_dir / "debug_node_output.json", node_output)
+                    dump_json(self.config.output_dir / "debug_element_output.json", element_output)
+                    dump_text(self.config.output_dir / "pipeline.log", "\n".join(state.logs))
+                continue
+
+            # Phase 2: Structural consistency check (new)
+            consistency = validate_geometry_consistency(
+                node_output, element_output,
+                problem_analysis=state.problem_analysis,
+                construction_plan=state.construction_plan,
+            )
+            state.log(
+                f"Geometry consistency: errors={consistency.details.get('summary', {}).get('total_errors', 0)}, "
+                f"warnings={consistency.details.get('summary', {}).get('total_warnings', 0)}"
+            )
+
+            if not consistency.ok:
+                state.log("Geometry consistency check failed: " + "; ".join(consistency.errors))
+                all_consistency_errors.extend(consistency.errors)
+                all_errors.extend(consistency.errors)
+
+                # Classify errors by agent for targeted retry
+                node_errs = [e for e in consistency.errors if _error_is_node_fault(e)]
+                elem_errs = [e for e in consistency.errors if _error_is_element_fault(e)]
+
+                if node_errs and not elem_errs:
+                    node_repair_hint = build_repair_hint("geometry_assembly", node_errs, attempt)
+                    elem_repair_hint = None
+                    state.log("Targeting Node Agent for repair (node-specific errors only).")
+                elif elem_errs and not node_errs:
+                    elem_repair_hint = build_repair_hint("geometry_assembly", elem_errs, attempt)
+                    node_repair_hint = None
+                    state.log("Targeting Element Agent for repair (element-specific errors only).")
+                else:
+                    node_repair_hint = build_repair_hint("geometry_assembly", node_errs, attempt) if node_errs else None
+                    elem_repair_hint = build_repair_hint("geometry_assembly", elem_errs, attempt) if elem_errs else None
+                    repair_hint = build_repair_hint("geometry_assembly", consistency.errors, attempt)
+
+                if self.config.write_outputs:
+                    dump_json(self.config.output_dir / "debug_node_output.json", node_output)
+                    dump_json(self.config.output_dir / "debug_element_output.json", element_output)
+                    dump_json(self.config.output_dir / "debug_geometry_consistency.json", consistency.details)
+                    dump_text(self.config.output_dir / "pipeline.log", "\n".join(state.logs))
+                continue
+
+            # Both validations passed
+            state.node_output = node_output
+            state.element_output = element_output
+            state.mapped_geometry = map_connectivity(node_output, element_output)
+            self._checkpoint_errors["geometry"] = all_errors
+            self._checkpoint_errors["geometry_consistency"] = all_consistency_errors
+            # Persist consistency details for UI
+            if consistency.details:
+                self._consistency_details = consistency.details
+            return
+
         self._checkpoint_errors["geometry"] = all_errors
+        self._checkpoint_errors["geometry_consistency"] = all_consistency_errors
         raise RuntimeError("Geometry checkpoint failed after maximum retries.")
 
     def _run_load_integration(self, state: PipelineState) -> None:
@@ -314,3 +389,5 @@ class StructuralModelingPipeline:
         dump_text(out_dir / "geometry_code.py", state.geometry_code or "")
         dump_text(out_dir / "complete_code.py", state.complete_code or "")
         dump_text(out_dir / "pipeline.log", "\n".join(state.logs))
+        if self._consistency_details:
+            dump_json(out_dir / "geometry_consistency.json", self._consistency_details)

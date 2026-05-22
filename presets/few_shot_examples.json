@@ -1,0 +1,35 @@
+{
+  "problem_analysis": [
+    {
+      "agent_name": "problem_analysis",
+      "input_signature": "bays:3_stories:4",
+      "prompt_variant": "problem_analysis-v3",
+      "reward": 0.7,
+      "success": true,
+      "llm_input": "",
+      "llm_output": ""
+    }
+  ],
+  "construction_planning": [
+    {
+      "agent_name": "construction_planning",
+      "input_signature": "bays:3_stories:4",
+      "prompt_variant": "construction_planning-v3",
+      "reward": 0.7,
+      "success": true,
+      "llm_input": "",
+      "llm_output": ""
+    }
+  ],
+  "node_agent": [
+    {
+      "agent_name": "node_agent",
+      "input_signature": "bays:3_stories:4",
+      "prompt_variant": "node_agent-v3",
+      "reward": 0.7,
+      "success": true,
+      "llm_input": "",
+      "llm_output": ""
+    }
+  ]
+}

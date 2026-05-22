@@ -1,0 +1,11 @@
+{
+  "construction_planning-construction_planning-v1": 0.5,
+  "construction_planning-construction_planning-v2": 0.6,
+  "construction_planning-construction_planning-v3": 0.7,
+  "node_agent-node_agent-v1": 0.5,
+  "node_agent-node_agent-v2": 0.6,
+  "node_agent-node_agent-v3": 0.7,
+  "problem_analysis-problem_analysis-v1": 0.5,
+  "problem_analysis-problem_analysis-v2": 0.6,
+  "problem_analysis-problem_analysis-v3": 0.7
+}

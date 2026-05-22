@@ -53,8 +53,16 @@ def _compute_input_signature(agent_name: str, agent_inputs: dict[str, Any]) -> s
 
 def _error_blames_agent(agent_name: str, error_text: str) -> bool:
     """Check if a validation error text implicates a specific agent."""
-    node_keywords = ["node", "duplicate node", "node id", "node output", "nodes"]
-    element_keywords = ["element", "duplicate element", "element id", "element output", "elements"]
+    node_keywords = [
+        "node", "duplicate node", "node id", "node output", "nodes",
+        "grid", "coordinate", "position", "orphan", "off-grid",
+        "duplicate-position",
+    ]
+    element_keywords = [
+        "element", "duplicate element", "element id", "element output", "elements",
+        "column", "beam", "orientation", "connectivity",
+        "δx", "δy", "vertical", "horizontal", "unknown type",
+    ]
     analysis_keywords = ["bay/story geometry", "problem analysis", "bay_data", "geometry"]
     plan_keywords = ["construction plan", "construction step", "step number", "step", "missing bay", "story"]
 
@@ -279,6 +287,7 @@ def classify_checkpoint_errors(
     analysis_errors: list[str] | None,
     geometry_errors: list[str] | None,
     code_errors: list[str] | None,
+    consistency_errors: list[str] | None = None,
 ) -> dict[str, list[str]]:
     """Classify raw checkpoint error lists into per-agent error buckets.
 
@@ -299,6 +308,16 @@ def classify_checkpoint_errors(
 
     if geometry_errors:
         for err in geometry_errors:
+            if _error_blames_agent("node_agent", err):
+                result["node_agent"].append(err)
+            if _error_blames_agent("element_agent", err):
+                result["element_agent"].append(err)
+            if not _error_blames_agent("node_agent", err) and not _error_blames_agent("element_agent", err):
+                result["node_agent"].append(err)
+                result["element_agent"].append(err)
+
+    if consistency_errors:
+        for err in consistency_errors:
             if _error_blames_agent("node_agent", err):
                 result["node_agent"].append(err)
             if _error_blames_agent("element_agent", err):

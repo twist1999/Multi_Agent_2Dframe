@@ -5,10 +5,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(r"H:\codex\multiagent")
+PROJECT_ROOT = Path(os.getenv("MULTIAGENT_ROOT", r"H:\codex\multiagent"))
 PROMPTS_ROOT = PROJECT_ROOT / "src" / "multiagent" / "prompts"
 OUTPUT_ROOT = PROJECT_ROOT / "outputs"
-RAG_OS_ROOT = Path(r"H:\codex\RAG_OS")
+PRESETS_ROOT = PROJECT_ROOT / "presets"
+RAG_OS_ROOT = Path(os.getenv("RAG_OS_ROOT", r"H:\codex\RAG_OS"))
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -37,12 +38,21 @@ class RagConfig:
 
 @dataclass
 class RLConfig:
-    enabled: bool = field(default_factory=lambda: _env_flag("MULTIAGENT_RL_ENABLED", False))
-    epsilon: float = field(default_factory=lambda: float(os.getenv("MULTIAGENT_RL_EPSILON", "0.1")))
+    enabled: bool = field(default_factory=lambda: _env_flag("MULTIAGENT_RL_ENABLED", True))
+    epsilon: float = field(default_factory=lambda: float(os.getenv("MULTIAGENT_RL_EPSILON", "0.05")))
     alpha: float = field(default_factory=lambda: float(os.getenv("MULTIAGENT_RL_ALPHA", "0.1")))
     buffer_size: int = field(default_factory=lambda: int(os.getenv("MULTIAGENT_RL_BUFFER_SIZE", "200")))
-    use_bandit: bool = field(default_factory=lambda: _env_flag("MULTIAGENT_RL_BANDIT", False))
+    use_bandit: bool = field(default_factory=lambda: _env_flag("MULTIAGENT_RL_BANDIT", True))
     use_few_shot: bool = field(default_factory=lambda: _env_flag("MULTIAGENT_RL_FEWSHOT", False))
+    use_presets: bool = field(default_factory=lambda: _env_flag("MULTIAGENT_RL_PRESETS", True))
+    presets_path: Path = field(default_factory=lambda: Path(os.getenv(
+        "MULTIAGENT_RL_PRESETS_PATH",
+        str(PRESETS_ROOT / "q_values.json"),
+    )))
+    few_shot_presets_path: Path = field(default_factory=lambda: Path(os.getenv(
+        "MULTIAGENT_RL_FEWSHOT_PATH",
+        str(PRESETS_ROOT / "few_shot_examples.json"),
+    )))
 
 
 @dataclass
@@ -66,3 +76,4 @@ class PipelineConfig:
 
 def ensure_directories() -> None:
     OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+    PRESETS_ROOT.mkdir(parents=True, exist_ok=True)

@@ -64,6 +64,7 @@ PIPELINE_ARTIFACT_FILES = [
     OUTPUT_ROOT / "pipeline.log",
     OUTPUT_ROOT / "debug_problem_analysis.json",
     OUTPUT_ROOT / "debug_construction_plan.json",
+    OUTPUT_ROOT / "geometry_consistency.json",
 ]
 
 
@@ -1249,6 +1250,7 @@ def build_workspace_state() -> dict:
             "moment_image_url": _artifact_url("/artifacts/moment_force_diagram.png", MOMENT_DIAGRAM_FILE),
         },
         "outputs": outputs,
+        "geometry_consistency": _read_json(OUTPUT_ROOT / "geometry_consistency.json"),
         "rl": _build_rl_snapshot(outputs),
         "agent_rewards": _build_agent_reward_summary(),
         "benchmark": {

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..config import PROMPTS_ROOT
+from ..config import PRESETS_ROOT, PROMPTS_ROOT
 from ..utils import load_text
 
 
@@ -126,6 +127,29 @@ class PerAgentBanditOptimizer:
             "variants": [v.to_dict() for v in self.variants.values()],
         }
 
+    def export_q_values(self) -> dict[str, float]:
+        """Export current Q-values for persistence (deployment pre-bake)."""
+        return {
+            vid: v.q_value
+            for vid, v in self.variants.items()
+            if v.count > 0
+        }
+
+    def apply_presets(self, q_presets: dict[str, float]) -> int:
+        """Apply pre-baked Q-values to matching variants.
+
+        Returns the number of variants updated.
+        """
+        applied = 0
+        for vid, q in q_presets.items():
+            if vid in self.variants:
+                self.variants[vid].q_value = max(
+                    self.variants[vid].q_value,
+                    q,
+                )
+                applied += 1
+        return applied
+
     @classmethod
     def from_variant_dir(
         cls,
@@ -133,11 +157,16 @@ class PerAgentBanditOptimizer:
         variant_dir: Path | None = None,
         epsilon: float = 0.1,
         alpha: float = 0.1,
+        q_presets: dict[str, float] | None = None,
     ) -> PerAgentBanditOptimizer:
         """Create an optimizer by loading all variants from a directory.
 
         Expected structure: variant_dir/{v1}.txt, {v2}.txt, ...
         If variant_dir doesn't exist or is empty, falls back to default prompt.
+
+        Args:
+            q_presets: Optional pre-baked Q-values from prior training.
+                       Keys are variant_ids, values are Q-values.
         """
         optimizer = cls(agent_name=agent_name, epsilon=epsilon, alpha=alpha)
         if variant_dir is None:
@@ -164,6 +193,10 @@ class PerAgentBanditOptimizer:
                     q_value=0.5,
                 ))
 
+        # Apply pre-baked Q-values if provided (production warm-start)
+        if q_presets:
+            optimizer.apply_presets(q_presets)
+
         return optimizer
 
 
@@ -180,19 +213,88 @@ class MultiAgentOptimizer:
         "complete_code_generator",
     ]
 
-    def __init__(self, epsilon: float = 0.1, alpha: float = 0.1) -> None:
+    PRESETS_FILE = PRESETS_ROOT / "q_values.json"
+
+    def __init__(
+        self,
+        epsilon: float = 0.1,
+        alpha: float = 0.1,
+        use_presets: bool = False,
+    ) -> None:
         self.epsilon = epsilon
         self.alpha = alpha
         self.optimizers: dict[str, PerAgentBanditOptimizer] = {}
-        self._init_all()
+        self._init_all(use_presets=use_presets)
 
-    def _init_all(self) -> None:
+    def _init_all(self, use_presets: bool = False) -> None:
+        q_presets = self._load_q_presets() if use_presets else {}
         for agent_name in self.CORE_AGENTS:
+            agent_presets = {
+                vid: q for vid, q in q_presets.items()
+                if vid.startswith(f"{agent_name}-")
+            }
             self.optimizers[agent_name] = PerAgentBanditOptimizer.from_variant_dir(
                 agent_name=agent_name,
                 epsilon=self.epsilon,
                 alpha=self.alpha,
+                q_presets=agent_presets if agent_presets else None,
             )
+
+    # ------------------------------------------------------------------
+    # Q-value persistence (pre-bake / deployment warm-start)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _load_q_presets() -> dict[str, float]:
+        """Load pre-baked Q-values from the presets directory."""
+        if not MultiAgentOptimizer.PRESETS_FILE.exists():
+            return {}
+        try:
+            data = json.loads(MultiAgentOptimizer.PRESETS_FILE.read_text("utf-8"))
+            if isinstance(data, dict):
+                return {str(k): float(v) for k, v in data.items()}
+        except (json.JSONDecodeError, ValueError, OSError):
+            pass
+        return {}
+
+    def export_all_q_values(self) -> dict[str, float]:
+        """Export all agent Q-values for pre-baking into deployment presets."""
+        all_q: dict[str, float] = {}
+        for opt in self.optimizers.values():
+            all_q.update(opt.export_q_values())
+        return all_q
+
+    def save_q_presets(self, path: Path | None = None) -> Path:
+        """Persist current Q-values to a JSON preset file.
+
+        Args:
+            path: Target path. Defaults to PRESETS_ROOT / 'q_values.json'.
+        Returns:
+            The path written to.
+        """
+        target = path or MultiAgentOptimizer.PRESETS_FILE
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(self.export_all_q_values(), indent=2, ensure_ascii=False),
+            "utf-8",
+        )
+        return target
+
+    @classmethod
+    def from_presets(
+        cls,
+        epsilon: float = 0.05,
+        alpha: float = 0.1,
+        presets_path: Path | None = None,
+    ) -> MultiAgentOptimizer:
+        """Factory: create optimizer pre-loaded with baked Q-values.
+
+        This is the production entry point — variants start with pre-optimized
+        Q-values so the bandit exploits known-good prompts from day one.
+        """
+        if presets_path:
+            cls.PRESETS_FILE = presets_path
+        return cls(epsilon=epsilon, alpha=alpha, use_presets=True)
 
     def get(self, agent_name: str) -> PerAgentBanditOptimizer:
         if agent_name not in self.optimizers:
