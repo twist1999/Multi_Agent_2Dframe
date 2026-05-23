@@ -25,7 +25,7 @@ def reset_token_usage_callback(token: contextvars.Token) -> None:
 
 
 class LLMClient:
-    def _chat(self, agent_name: str, prompt: str, model_config: AgentModelConfig) -> str:
+    def _chat(self, agent_name: str, prompt: str, model_config: AgentModelConfig, response_format: dict | None = None) -> str:
         headers = {
             "Authorization": f"Bearer {model_config.api_key}",
             "Content-Type": "application/json",
@@ -38,6 +38,8 @@ class LLMClient:
             "temperature": model_config.temperature,
             "max_tokens": 16384,
         }
+        if response_format is not None:
+            payload["response_format"] = response_format
         response = requests.post(
             f"{model_config.base_url}/chat/completions",
             headers=headers,

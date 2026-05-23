@@ -76,6 +76,22 @@ function initNav() {
   document.querySelectorAll("[data-nav]").forEach(btn=>{
     btn.addEventListener("click",()=>switchSection(btn.dataset.nav));
   });
+
+  // LLM config toggle
+  $("llm-config-header").addEventListener("click", () => {
+    const body = $("llm-config-body");
+    const toggle = $("llm-config-toggle");
+    if (body.style.display === "none") {
+      body.style.display = "";
+      toggle.textContent = "▲";
+    } else {
+      body.style.display = "none";
+      toggle.textContent = "▼";
+    }
+  });
+  $("llm-config-save").addEventListener("click", (e) => { e.stopPropagation(); saveAgentLLMConfig(); });
+  $("llm-config-clear").addEventListener("click", (e) => { e.stopPropagation(); clearLLMConfig(); });
+  $("llm-apply-all").addEventListener("click", (e) => { e.stopPropagation(); applyAllLLMConfig(); });
 }
 
 // Mobile menu
@@ -669,6 +685,95 @@ function stopPolling(){
 }
 
 // ----- Hydrate State -----
+const TIER_CONFIG = {
+  tier1: {
+    label: "Core Modeling",
+    agents: ["problem_analysis", "construction_planning", "node_agent", "element_agent"],
+  },
+  tier2: {
+    label: "Code Generation",
+    agents: ["load_assignment", "geometry_code_translator", "complete_code_generator"],
+  },
+  tier3: {
+    label: "Verification",
+    agents: ["python_check_agent"],
+  },
+};
+
+function renderLLMConfig(tierData) {
+  tierData = tierData || {};
+  const tiers = tierData.tiers || {};
+
+  const rows = Object.entries(TIER_CONFIG).map(([tid, tdef]) => {
+    const cfg = tiers[tid] || {};
+    const agentsList = tdef.agents.map(a => `<code>${escapeHtml(a)}</code>`).join(", ");
+    return `<div class="tier-card">
+      <div class="tier-header">
+        <strong>${escapeHtml(tdef.label)}</strong>
+        <span class="form-hint">${agentsList}</span>
+      </div>
+      <div class="tier-inputs">
+        <input class="form-input llm-model-name" data-tier="${escapeHtml(tid)}" placeholder="Model name" value="${escapeHtml(cfg.model_name||"")}">
+        <input class="form-input llm-api-key" data-tier="${escapeHtml(tid)}" type="password" placeholder="API key" value="${escapeHtml(cfg.api_key||"")}">
+        <input class="form-input llm-base-url" data-tier="${escapeHtml(tid)}" placeholder="Base URL" value="${escapeHtml(cfg.base_url||"")}">
+      </div>
+    </div>`;
+  }).join("");
+
+  $("llm-config-table").innerHTML = rows;
+
+  const configured = Object.values(tiers).filter(c => c.api_key || c.model_name).length;
+  $("llm-config-status").textContent = configured > 0
+    ? `${configured}/3 tier(s) configured — overrides active`
+    : "Using server defaults (DEEPSEEK_API_KEY / DEEPSEEK_MODEL)";
+}
+
+function collectLLMConfig() {
+  const tiers = {};
+  document.querySelectorAll(".llm-model-name").forEach(input => {
+    const tid = input.dataset.tier;
+    if (!tiers[tid]) tiers[tid] = {};
+    tiers[tid].model_name = input.value.trim();
+  });
+  document.querySelectorAll(".llm-api-key").forEach(input => {
+    const tid = input.dataset.tier;
+    if (!tiers[tid]) tiers[tid] = {};
+    tiers[tid].api_key = input.value.trim();
+  });
+  document.querySelectorAll(".llm-base-url").forEach(input => {
+    const tid = input.dataset.tier;
+    if (!tiers[tid]) tiers[tid] = {};
+    tiers[tid].base_url = input.value.trim();
+  });
+  return tiers;
+}
+
+async function saveAgentLLMConfig() {
+  const tiers = collectLLMConfig();
+  const p = await request("/api/agent-llm-config", { method: "POST", body: JSON.stringify({ tiers }) });
+  if (p.state) hydrateState(p.state);
+  toast(p.message, p.ok ? "success" : "error");
+}
+
+function clearLLMConfig() {
+  document.querySelectorAll(".llm-model-name,.llm-api-key,.llm-base-url").forEach(el => el.value = "");
+  saveAgentLLMConfig();
+}
+
+function applyAllLLMConfig() {
+  const firstModel = document.querySelector(".llm-model-name")?.value || "";
+  const firstKey = document.querySelector(".llm-api-key")?.value || "";
+  const firstUrl = document.querySelector(".llm-base-url")?.value || "";
+  if (!firstModel && !firstKey && !firstUrl) {
+    toast("Fill in the first tier's fields first, then click 'Apply to All'.", "info");
+    return;
+  }
+  document.querySelectorAll(".llm-model-name").forEach(el => { if (!el.value) el.value = firstModel; });
+  document.querySelectorAll(".llm-api-key").forEach(el => { if (!el.value) el.value = firstKey; });
+  document.querySelectorAll(".llm-base-url").forEach(el => { if (!el.value) el.value = firstUrl; });
+  toast("Applied first agent's config to all empty fields.", "success");
+}
+
 function hydrateState(payload){
   state.prompt=payload.prompt||"";
   state.outputs=payload.outputs||{};
@@ -686,6 +791,7 @@ function hydrateState(payload){
   renderPromptHistory(payload.rl?.prompt_history||[]);
   renderBenchmark(payload.benchmark||{});
   renderDashboard(payload);
+  renderLLMConfig(payload.agent_llm_config || {});
   renderViewer();
   renderSelectionPrompt();
   updateStatusBar(payload.run||{},payload.execution||{},payload.benchmark||{});

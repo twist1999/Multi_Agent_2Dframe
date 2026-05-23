@@ -50,6 +50,12 @@ def _extract_bay_story_counts(problem_analysis: dict[str, Any]) -> dict[int, int
     if not isinstance(geometry, dict):
         return {}
 
+    # Priority 1: explicit per_bay_story_counts list (v5+ format)
+    per_bay = _first_mapping_value(geometry, ("per_bay_story_counts", "Per_bay_story_counts"))
+    if isinstance(per_bay, list) and all(isinstance(v, (int, float)) for v in per_bay):
+        return {i + 1: int(v) for i, v in enumerate(per_bay)}
+
+    # Priority 2: Bay_data / bays array
     bays = _first_mapping_value(geometry, ("Bay_data", "bays", "Bays", "bay_data"))
     bay_story_counts: dict[int, int] = {}
     if isinstance(bays, list):
@@ -68,6 +74,7 @@ def _extract_bay_story_counts(problem_analysis: dict[str, Any]) -> dict[int, int
     if bay_story_counts:
         return bay_story_counts
 
+    # Priority 3: uniform bay_count × story_count (fallback)
     total_bays = _to_int(
         _first_mapping_value(geometry, ("Total_bays", "total_bays", "bay_count", "num_bays")),
     )
@@ -117,6 +124,11 @@ def validate_analysis_planning(problem_analysis: dict, construction_plan: dict) 
         if step_number in seen_step_numbers:
             errors.append(f"Duplicate construction step number detected: {step_number}.")
         seen_step_numbers.add(step_number)
+
+        step_type = str(_step_value(step, "Step_type", "step_type") or "").lower()
+        # Skip base_nodes step (bay=0, story=0) — not a bay/story pair
+        if step_type == "base_nodes":
+            continue
 
         bay_number = _to_int(_step_value(step, "Bay_number", "bay_number", "bay_id"), 0)
         story_number = _to_int(_step_value(step, "Story_number", "story_number", "story_id"), 0)
@@ -348,7 +360,7 @@ def validate_geometry_consistency(
             element_status[eid]["status"] = "warning"
             element_status[eid]["messages"].append(msg)
 
-        if effective_type in ("beam",) and dy > tolerance:
+        if effective_type in ("beam", "girder") and dy > tolerance:
             msg = f"Beam {eid} has Δy={dy:.2f}m (should be ≈0, horizontal)"
             warnings.append(msg)
             element_status[eid]["status"] = "warning"
@@ -403,7 +415,7 @@ def validate_geometry_consistency(
         expected_cols = (total_bays + 1) * total_stories
         expected_beams = total_bays * (total_stories + 1)
         col_count = sum(1 for e in el_map.values() if str(e.get("type", "")).lower() in ("column",))
-        beam_count = sum(1 for e in el_map.values() if str(e.get("type", "")).lower() in ("beam",))
+        beam_count = sum(1 for e in el_map.values() if str(e.get("type", "")).lower() in ("beam", "girder"))
         unknown_count = len(el_map) - col_count - beam_count
 
         if col_count > 0 and col_count != expected_cols:

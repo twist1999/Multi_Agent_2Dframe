@@ -96,6 +96,23 @@
             <span class="badge badge-idle" id="run-status">Idle</span>
             <span id="run-message">Ready to run.</span>
           </div>
+          <!-- Agent LLM Settings -->
+          <div class="card" style="margin-bottom:14px">
+            <div class="card-header" style="cursor:pointer" id="llm-config-header">
+              <h3>🔑 Agent LLM Settings</h3>
+              <span class="form-hint" id="llm-config-status">Use defaults (DEEPSEEK_MODEL)</span>
+              <button class="btn btn-ghost btn-sm" id="llm-config-toggle">▼</button>
+            </div>
+            <div id="llm-config-body" style="display:none">
+              <p class="form-hint" style="margin-bottom:10px">Configure API keys and models per agent tier. Leave blank to use server defaults. API keys are stored server-side only.</p>
+              <div class="btn-group" style="margin-bottom:10px">
+                <button class="btn btn-ghost btn-sm" id="llm-apply-all">📋 Apply to All Tiers</button>
+                <button class="btn btn-primary btn-sm" id="llm-config-save">💾 Save Config</button>
+                <button class="btn btn-ghost btn-sm" id="llm-config-clear">🗑 Clear All</button>
+              </div>
+              <div id="llm-config-table"></div>
+            </div>
+          </div>
           <div class="prompt-area">
             <label class="form-label" for="prompt-input">Structural Frame Description</label>
             <textarea class="form-textarea" id="prompt-input" placeholder="Describe your 2D frame structure... e.g. 'A 3-bay 4-story reinforced concrete moment frame with fixed column bases...'"></textarea>

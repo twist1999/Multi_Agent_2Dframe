@@ -43,6 +43,7 @@ SECTION_DIAGRAM_STDOUT_FILE = OUTPUT_ROOT / "section_diagram_stdout.txt"
 SECTION_DIAGRAM_STDERR_FILE = OUTPUT_ROOT / "section_diagram_stderr.txt"
 SECTION_DIAGRAM_DPI = int(os.getenv("SECTION_DIAGRAM_DPI", "450"))
 BENCHMARK_STATUS_FILE = OUTPUT_ROOT / "benchmark_status.json"
+AGENT_LLM_CONFIG_FILE = OUTPUT_ROOT / "agent_llm_config.json"
 BENCHMARK_ARTIFACT_ROOT = OUTPUT_ROOT / "benchmark_artifacts"
 MODEL_VISUALIZATION_FILE = OUTPUT_ROOT / "model_visualization.png"
 NODE_VISUALIZATION_FILE = OUTPUT_ROOT / "node_visualization.png"
@@ -128,7 +129,10 @@ def _read_text(path: Path) -> str:
 def _read_json(path: Path) -> dict | list | None:
     if not path.exists():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError):
+        return None
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -665,7 +669,7 @@ def _optimized_pipeline_config() -> PipelineConfig:
     config.max_retries_code_translation = int(os.getenv("MULTIAGENT_REVIEW_RETRIES_CODE", "2"))
     config.rag.top_k = int(os.getenv("MULTIAGENT_REVIEW_RAG_TOP_K", "1"))
     config.rag.max_chars = int(os.getenv("MULTIAGENT_REVIEW_RAG_MAX_CHARS", "2500"))
-    return config
+    return _apply_agent_llm_overrides(config)
 
 
 def _run_benchmark_cases(
@@ -895,9 +899,9 @@ def _run_review_set_async(batch_id: str | None = None) -> None:
 
 
 def _run_pipeline_async(prompt: str) -> None:
-    _clear_pipeline_artifacts()
     try:
-        pipeline = StructuralModelingPipeline(PipelineConfig())
+        config = _apply_agent_llm_overrides(PipelineConfig())
+        pipeline = StructuralModelingPipeline(config)
         pipeline.run(prompt)
     except Exception as exc:
         _update_run_state(
@@ -1232,6 +1236,90 @@ def _run_python_check_agent(
         )
 
 
+AGENT_TIERS = {
+    "tier1": {
+        "label": "Core Modeling",
+        "agents": ["problem_analysis", "construction_planning", "node_agent", "element_agent"],
+    },
+    "tier2": {
+        "label": "Code Generation",
+        "agents": ["load_assignment", "geometry_code_translator", "complete_code_generator"],
+    },
+    "tier3": {
+        "label": "Verification",
+        "agents": ["python_check_agent"],
+    },
+}
+
+_AGENT_TO_TIER: dict[str, str] = {}
+for _tid, _tdef in AGENT_TIERS.items():
+    for _aname in _tdef["agents"]:
+        _AGENT_TO_TIER[_aname] = _tid
+
+
+def _load_agent_llm_config() -> dict:
+    """Load tiered LLM overrides from disk."""
+    raw = _read_json(AGENT_LLM_CONFIG_FILE) or {}
+    if "tiers" in raw:
+        return raw
+    if not raw:
+        return {}
+    # Migrate from legacy per-agent format to tiered format
+    migrated: dict[str, dict] = {}
+    for tid, tdef in AGENT_TIERS.items():
+        migrated[tid] = {"label": tdef["label"], "model_name": "", "api_key": "", "base_url": ""}
+    for agent_name, cfg in raw.items():
+        tid = _AGENT_TO_TIER.get(agent_name)
+        if tid and cfg:
+            target = migrated[tid]
+            if cfg.get("model_name") and not target["model_name"]:
+                target["model_name"] = cfg["model_name"]
+            if cfg.get("api_key") and not target["api_key"]:
+                target["api_key"] = cfg["api_key"]
+            if cfg.get("base_url") and not target["base_url"]:
+                target["base_url"] = cfg["base_url"]
+    result = {"tiers": migrated}
+    _save_agent_llm_config(result)
+    return result
+
+
+def _save_agent_llm_config(config: dict) -> None:
+    _write_json(AGENT_LLM_CONFIG_FILE, config)
+
+
+def _apply_agent_llm_overrides(config: PipelineConfig) -> PipelineConfig:
+    """Apply tiered LLM overrides to a PipelineConfig from saved file."""
+    overrides = _load_agent_llm_config()
+    tiers = overrides.get("tiers", {})
+    if not tiers:
+        return config
+
+    agent_configs: dict[str, AgentModelConfig] = {
+        "problem_analysis": config.problem_analysis,
+        "construction_planning": config.construction_planning,
+        "node_agent": config.node_agent,
+        "element_agent": config.element_agent,
+        "load_assignment": config.load_assignment,
+        "geometry_code_translator": config.geometry_code_translator,
+        "complete_code_generator": config.complete_code_generator,
+        "python_check_agent": config.python_check_agent,
+    }
+
+    for tid, tdef in AGENT_TIERS.items():
+        tier_cfg = tiers.get(tid, {})
+        for agent_name in tdef["agents"]:
+            cfg = agent_configs.get(agent_name)
+            if cfg is None:
+                continue
+            if tier_cfg.get("api_key"):
+                cfg.api_key = tier_cfg["api_key"]
+            if tier_cfg.get("base_url"):
+                cfg.base_url = tier_cfg["base_url"]
+            if tier_cfg.get("model_name"):
+                cfg.model_name = tier_cfg["model_name"]
+    return config
+
+
 def build_workspace_state() -> dict:
     example_input = _read_json(PROJECT_ROOT / "example_input.json") or {}
     current_prompt = _read_json(CURRENT_PROMPT_FILE) or {}
@@ -1257,6 +1345,7 @@ def build_workspace_state() -> dict:
             **_snapshot_benchmark_state(),
             "cases": RLLogger().benchmark_cases(),
         },
+        "agent_llm_config": _load_agent_llm_config(),
         "stages": [
             {
                 "id": "analysis",
@@ -1402,16 +1491,43 @@ class MultiAgentWebHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         payload = self._read_payload()
+        if parsed.path == "/api/agent-llm-config":
+            tiers_payload = payload.get("tiers", {})
+            if not isinstance(tiers_payload, dict):
+                self._send_json({"ok": False, "message": "Expected {tiers: {tier_id: {model_name, api_key, base_url}}}."})
+                return
+            sanitized_tiers: dict[str, dict[str, str]] = {}
+            for tid, tdef in AGENT_TIERS.items():
+                input_tier = tiers_payload.get(tid, {})
+                sanitized_tiers[tid] = {
+                    "label": tdef["label"],
+                    "agents": tdef["agents"],
+                    "model_name": str(input_tier.get("model_name", "")).strip() if isinstance(input_tier, dict) else "",
+                    "api_key": str(input_tier.get("api_key", "")).strip() if isinstance(input_tier, dict) else "",
+                    "base_url": str(input_tier.get("base_url", "")).strip() if isinstance(input_tier, dict) else "",
+                }
+            _save_agent_llm_config({"tiers": sanitized_tiers})
+            configured = sum(1 for t in sanitized_tiers.values() if t["api_key"] or t["model_name"])
+            self._send_json({
+                "ok": True,
+                "message": f"LLM config saved — {configured}/3 tiers configured.",
+                "state": build_workspace_state(),
+            })
+            return
         if parsed.path == "/api/submit":
             prompt = str(payload.get("prompt", "")).strip()
             if not prompt:
                 self._send_json({"ok": False, "message": "Prompt cannot be empty."})
                 return
-            if not _has_llm_api_key():
+            has_env_key = _has_llm_api_key()
+            agent_configs = _load_agent_llm_config()
+            tiers = agent_configs.get("tiers", {})
+            has_agent_key = any(cfg.get("api_key") for cfg in tiers.values())
+            if not has_env_key and not has_agent_key:
                 self._send_json(
                     {
                         "ok": False,
-                        "message": "DEEPSEEK_API_KEY is not set in the web server process. Set it, restart the UI, then run again.",
+                        "message": "No API key configured. Set DEEPSEEK_API_KEY in environment or configure per-agent keys in LLM Settings.",
                         "state": build_workspace_state(),
                     }
                 )
@@ -1440,6 +1556,7 @@ class MultiAgentWebHandler(BaseHTTPRequestHandler):
                 source="web",
                 note=str(payload.get("note", "")).strip(),
             )
+            _clear_pipeline_artifacts()
             _update_run_state(
                 status="running",
                 message="Pipeline is running.",
