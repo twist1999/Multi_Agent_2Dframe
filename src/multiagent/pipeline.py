@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import ast
+import contextvars
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from .agents.complete_code_generator import CompleteCodeGenerator
@@ -154,6 +156,46 @@ class StructuralModelingPipeline:
             )
         return agent_rewards
 
+    def _run_node_and_element_agents(
+        self,
+        *,
+        state: PipelineState,
+        node_repair_hint: str | None,
+        element_repair_hint: str | None,
+        node_variant: Any | None,
+        element_variant: Any | None,
+    ) -> tuple[dict, dict]:
+        """Run the independent geometry agents concurrently."""
+        assert state.problem_analysis is not None
+        assert state.construction_plan is not None
+
+        node_prompt_override = node_variant.load() if node_variant else None
+        element_prompt_override = element_variant.load() if element_variant else None
+
+        def run_node_agent() -> dict:
+            return self.node_agent.run(
+                state.problem_analysis,
+                state.construction_plan,
+                repair_hint=node_repair_hint,
+                prompt_override=node_prompt_override,
+            )
+
+        def run_element_agent() -> dict:
+            return self.element_agent.run(
+                state.problem_analysis,
+                state.construction_plan,
+                repair_hint=element_repair_hint,
+                prompt_override=element_prompt_override,
+            )
+
+        # Preserve the token-usage callback ContextVar used by benchmark logging.
+        node_context = contextvars.copy_context()
+        element_context = contextvars.copy_context()
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            node_future = executor.submit(node_context.run, run_node_agent)
+            element_future = executor.submit(element_context.run, run_element_agent)
+            return node_future.result(), element_future.result()
+
     def run(self, user_input: str) -> PipelineState:
         self._checkpoint_errors = {}
         self._variant_tracker = {}
@@ -226,13 +268,13 @@ class StructuralModelingPipeline:
                 # Allow per-agent targeted repair hints
                 node_hint = node_repair_hint or repair_hint
                 elem_hint = elem_repair_hint or repair_hint
-                node_output = self.node_agent.run(
-                    state.problem_analysis, state.construction_plan, repair_hint=node_hint,
-                    prompt_override=n_variant.load() if n_variant else None,
-                )
-                element_output = self.element_agent.run(
-                    state.problem_analysis, state.construction_plan, repair_hint=elem_hint,
-                    prompt_override=e_variant.load() if e_variant else None,
+                state.log("Running NodeAgent and ElementAgent in parallel.")
+                node_output, element_output = self._run_node_and_element_agents(
+                    state=state,
+                    node_repair_hint=node_hint,
+                    element_repair_hint=elem_hint,
+                    node_variant=n_variant,
+                    element_variant=e_variant,
                 )
             except Exception as exc:
                 state.log(f"Geometry assembly API call failed: {exc}")

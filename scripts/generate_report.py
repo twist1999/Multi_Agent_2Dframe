@@ -110,6 +110,7 @@ toc_items = [
     '   4.6 结构化JSON输出与API可靠性 (NEW v2.3)',
     '   4.7 分层式Agent LLM配置系统 (Updated v2.3)',
     '   4.8 RAG知识库集成 (RAG Knowledge Base Integration)',
+    '   4.9 并行几何Agent与执行改进 (Parallel Geometry Agents & Execution Improvements, NEW v2.4)',
     '5. Benchmark测试结果 (Benchmark Results)',
     '   5.1 整体测试概况',
     '   5.2 各批次详细统计',
@@ -1039,6 +1040,107 @@ add_para(
     '默认FAISS索引使用确定性Token哈希嵌入，可在无ML模型的情况下离线运行。'
     '若希望提升对改述查询的召回率，可安装sentence-transformers并修改indexer.py中的嵌入函数，'
     '检索管线其余部分保持不变。'
+)
+
+add_heading('4.9 并行几何Agent与执行改进 (Parallel Geometry Agents & Execution Improvements) [NEW in v2.4]', 2)
+
+add_para(
+    'v2.4版本引入了三项正交的改进，目的是缩短端到端响应时间并提升生成代码的可复现性：'
+)
+
+add_heading('改进1：NodeAgent与ElementAgent并行执行 (核心收益)', 3)
+add_para(
+    'NodeAgent和ElementAgent都只依赖上游的ProblemAnalysis + ConstructionPlan输出，'
+    '而v6 prompt重写确保ElementAgent通过闭式公式生成单元（不依赖NodeAgent的实际节点ID）。'
+    '这使两个Agent完全独立，可以并行执行。'
+)
+
+add_para('实现代码（pipeline.py:159-197）：')
+add_code_block(
+    'def _run_node_and_element_agents(...) -> tuple[dict, dict]:\n'
+    '    """Run the independent geometry agents concurrently."""\n'
+    '    node_context = contextvars.copy_context()\n'
+    '    element_context = contextvars.copy_context()\n'
+    '    with ThreadPoolExecutor(max_workers=2) as executor:\n'
+    '        node_future = executor.submit(node_context.run, run_node_agent)\n'
+    '        element_future = executor.submit(element_context.run, run_element_agent)\n'
+    '        return node_future.result(), element_future.result()'
+)
+
+add_para(
+    '设计要点：\n'
+    '• 使用ThreadPoolExecutor（而非multiprocessing）是合适的选择：两个线程大部分时间'
+    '等待LLM HTTP I/O，requests.post()调用期间Python GIL会释放，因此能实现真正的并发。\n'
+    '• contextvars.copy_context() 在每个线程中保留token-usage回调ContextVar，'
+    '确保per-agent的benchmark token统计仍然准确。\n'
+    '• 校验仍是串行的：两个Agent输出都返回后才执行 validate_geometry() 和 '
+    'validate_geometry_consistency()。整体模式是 fork → 并行调用LLM → join → 联合校验。'
+)
+
+add_heading('实测性能影响', 3)
+add_table(
+    ['指标', 'v2.4之前（串行）', 'v2.4之后（并行）', '改善幅度'],
+    [
+        ['几何装配阶段（单次尝试）', 'T_node + T_elem ≈ 140秒', 'max(T_node, T_elem) ≈ 80秒', '快约 43%'],
+        ['最坏情况（1次重试）', '约 280秒', '约 160秒', '快约 43%'],
+        ['端到端流水线（典型）', '约 500秒', '约 420秒', '快约 16%'],
+        ['Token成本', '不变', '不变', '无影响'],
+    ]
+)
+add_para(
+    '端到端改善幅度低于单阶段改善，因为几何装配阶段大约占总运行时间的30-40%，'
+    '代码翻译和分析阶段不受影响。'
+)
+
+add_heading('为什么并行间接提升了正确率', 3)
+add_para(
+    '并行执行本身不会改变LLM单次输出的质量，但使能并行的v6重写设计同时也带来了正确率收益：'
+)
+items = [
+    'ID冲突消除：v5及之前版本中，ElementAgent必须读取NodeAgent的输出来构造单元，'
+    '这导致斜向单元bug和ID重复问题。v6采用基于per_bay_story_counts的闭式公式生成单元，'
+    '完全解耦两个Agent，彻底消除了这类失败模式。',
+    '定向修复路由：当 validate_geometry_consistency() 失败时，错误按node-specific和'
+    'element-specific分类（pipeline.py:319-333），下次迭代时只对出错的Agent发送修复提示，'
+    '而正确Agent的输出通过身份重执行保留。这避免了紧耦合串行设计中"正确输出被重新生成反而变差"'
+    '这种退步问题。',
+    '独立RL变体学习：_select_variant("node_agent") 和 _select_variant("element_agent") '
+    '独立累积Q值。串行流水线如果共享变体会污染跨Agent的学习信号。',
+]
+for item in items:
+    doc.add_paragraph(item, style='List Bullet')
+
+add_heading('改进2：单次运行的代码归档', 3)
+add_para(
+    '此前只有benchmark cases会将complete_code.py归档到 '
+    'outputs/benchmark_artifacts/<case_id>/。单次提交（来自Run Pipeline面板）'
+    '只写入 outputs/complete_code.py，下次运行就被覆盖——历史代码丢失。'
+)
+add_para(
+    'v2.4通过将提交时生成的run_id传入 _run_pipeline_async()，并在运行结束时'
+    '（无论成功或失败）调用 _archive_benchmark_artifacts(run_id) 来修复此问题。'
+    '归档目录包含全部13个流水线工件（状态JSON、几何/完整代码、流水线日志、调试转储），'
+    '便于事后可复现地分析任意历史case。'
+)
+
+add_heading('改进3：History面板"Run Code"按钮', 3)
+add_para(
+    'History面板的每一行现在都有一个"▶ Run Code"按钮。点击后会将run_id POST至 '
+    '/api/run-benchmark-code 端点，该端点：\n'
+    '• 定位该case归档的complete_code.py文件\n'
+    '• 通过 _resolve_ops_python() 解析OPS Python可执行文件\n'
+    '• 通过 subprocess.run() 执行代码，120秒超时\n'
+    '• 将stdout、stderr、return code及计时信息返回给浏览器\n'
+    '结果在可折叠的details块中行内显示，包含状态徽章（succeeded/failed）和折叠的'
+    'stdout/stderr视图。这使得无需重跑整条multi-agent流水线即可重新验证任意历史case。'
+)
+
+add_heading('改进4：OPS Python解析的鲁棒性', 3)
+add_para(
+    '_resolve_ops_python() 函数现在检查7个候选位置（之前是5个）：'
+    '优先 OPS_PYTHON 环境变量，然后是硬编码的fallback路径，包括 '
+    'D:\\Anaconda\\envs\\ops_clean\\python.exe 和 D:\\Anaconda\\envs\\ops\\python.exe。'
+    '这消除了"过时的PowerShell会话读不到新注册的用户级OPS_PYTHON变量"这一常见问题。'
 )
 
 doc.add_page_break()

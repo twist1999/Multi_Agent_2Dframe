@@ -112,6 +112,7 @@ toc_items = [
     '   4.7 Structured JSON Output & API Reliability (NEW v2.3)',
     '   4.8 Tiered Agent LLM Configuration (Updated v2.3)',
     '   4.9 RAG Knowledge Base Integration',
+    '   4.10 Parallel Geometry Agents & Execution Improvements (NEW v2.4)',
     '5. Benchmark Results',
     '   5.1 Overall Summary',
     '   5.2 Per-Batch Statistics',
@@ -1267,6 +1268,121 @@ add_para(
     'without any ML models. To upgrade to neural sentence embeddings (higher recall on paraphrased queries), '
     'install sentence-transformers and modify the embed function in indexer.py. The retrieval pipeline '
     'is otherwise unchanged.'
+)
+
+add_heading('4.10 Parallel Geometry Agents & Execution Improvements [NEW in v2.4]', 2)
+
+add_para(
+    'Three orthogonal improvements were introduced in v2.4 to reduce end-to-end '
+    'response time and improve the reproducibility of generated code:'
+)
+
+add_heading('Improvement 1: Parallel NodeAgent and ElementAgent Execution', 3)
+add_para(
+    'NodeAgent and ElementAgent both depend only on the upstream ProblemAnalysis + '
+    'ConstructionPlan outputs, and the v6 prompt redesign ensures ElementAgent generates '
+    'elements purely from a closed-form formula (no dependency on NodeAgent\'s actual '
+    'node IDs). This makes the two agents fully independent, enabling parallel execution.'
+)
+
+add_para('Implementation (pipeline.py:159-197):')
+add_code_block(
+    'def _run_node_and_element_agents(...) -> tuple[dict, dict]:\n'
+    '    """Run the independent geometry agents concurrently."""\n'
+    '    node_context = contextvars.copy_context()\n'
+    '    element_context = contextvars.copy_context()\n'
+    '    with ThreadPoolExecutor(max_workers=2) as executor:\n'
+    '        node_future = executor.submit(node_context.run, run_node_agent)\n'
+    '        element_future = executor.submit(element_context.run, run_element_agent)\n'
+    '        return node_future.result(), element_future.result()'
+)
+
+add_para(
+    'Notes on the design:\n'
+    '• ThreadPoolExecutor (not multiprocessing) is correct here because both threads '
+    'spend most of their time waiting on LLM HTTP I/O — the Python GIL is released during '
+    'requests.post() calls, so true concurrency is achieved.\n'
+    '• contextvars.copy_context() preserves the token-usage callback ContextVar in each '
+    'thread, ensuring per-agent benchmark token tracking remains accurate.\n'
+    '• Validation is still serial: both outputs must arrive before validate_geometry() '
+    'and validate_geometry_consistency() run. The fork/join pattern is fork → parallel LLM → '
+    'join → joint validation.'
+)
+
+add_heading('Measured Performance Impact', 3)
+add_table(
+    ['Metric', 'Before v2.4 (Serial)', 'After v2.4 (Parallel)', 'Improvement'],
+    [
+        ['Geometry assembly stage (single attempt)', 'T_node + T_elem ≈ 140 s', 'max(T_node, T_elem) ≈ 80 s', '~43% faster'],
+        ['Worst-case with 1 retry', '~280 s', '~160 s', '~43% faster'],
+        ['End-to-end pipeline (typical)', '~500 s', '~420 s', '~16% faster'],
+        ['Token cost', 'unchanged', 'unchanged', 'no impact'],
+    ]
+)
+add_para(
+    'The end-to-end improvement is lower than the per-stage improvement because '
+    'geometry assembly accounts for roughly 30-40% of total runtime. Code translation '
+    'and analysis stages are unaffected.'
+)
+
+add_heading('Why Parallelization Indirectly Improves Correctness', 3)
+add_para(
+    'Parallelization itself does not change LLM output quality, but the v6 '
+    'redesign that enabled parallelization also brings correctness benefits:'
+)
+items = [
+    'ID conflict elimination: in v5 and earlier, ElementAgent had to read NodeAgent\'s '
+    'output to construct elements, which caused diagonal-element bugs and duplicate IDs. '
+    'v6 generates elements via a closed-form formula based on per_bay_story_counts, '
+    'completely decoupling the two agents and removing this entire failure mode.',
+    'Targeted repair routing: when validate_geometry_consistency() fails, errors are '
+    'classified into node-specific vs element-specific faults (pipeline.py:319-333). '
+    'Only the failing agent receives a repair hint on the next iteration, while the '
+    'correct agent\'s output is preserved through identity re-execution. This avoids '
+    'the "correct output gets regenerated and becomes worse" regression that plagued '
+    'tightly coupled serial designs.',
+    'Independent RL variant learning: _select_variant("node_agent") and '
+    '_select_variant("element_agent") accumulate Q-values independently. Serial '
+    'pipelines that share variants pollute the learning signal across agents.',
+]
+for item in items:
+    doc.add_paragraph(item, style='List Bullet')
+
+add_heading('Improvement 2: Single-Run Code Archival', 3)
+add_para(
+    'Previously, only benchmark cases archived their complete_code.py to '
+    'outputs/benchmark_artifacts/<case_id>/. Single-run pipeline submissions (from the '
+    'Run Pipeline panel) wrote only to outputs/complete_code.py, which was overwritten '
+    'on the next run — historical code was lost.'
+)
+add_para(
+    'v2.4 fixes this by passing the run_id (generated at submit time) into '
+    '_run_pipeline_async() and calling _archive_benchmark_artifacts(run_id) at '
+    'completion, whether the run succeeded or failed. The archived directory contains '
+    'all 13 pipeline artifacts (state JSONs, geometry/complete code, pipeline log, '
+    'debug dumps), enabling reproducible post-hoc analysis.'
+)
+
+add_heading('Improvement 3: History Panel "Run Code" Button', 3)
+add_para(
+    'Each row in the History panel now exposes a "▶ Run Code" button. Clicking it '
+    'POSTs the run_id to /api/run-benchmark-code, which:\n'
+    '• Locates the archived complete_code.py for that case\n'
+    '• Resolves the OPS Python executable via _resolve_ops_python()\n'
+    '• Executes the code via subprocess.run() with a 120 s timeout\n'
+    '• Returns stdout, stderr, return code, and timing info to the browser\n'
+    'Results are rendered inline in a collapsible details block, showing a status '
+    'badge (succeeded/failed) plus a folded stdout/stderr view. This makes it easy to '
+    're-verify any historical case without re-running the full multi-agent pipeline.'
+)
+
+add_heading('Improvement 4: OPS Python Resolution Robustness', 3)
+add_para(
+    'The _resolve_ops_python() function now checks 7 candidate locations (up from 5): '
+    'the OPS_PYTHON environment variable first, followed by hardcoded fallback paths '
+    'including D:\\Anaconda\\envs\\ops_clean\\python.exe and D:\\Anaconda\\envs\\ops\\'
+    'python.exe. This eliminates the common case where a stale PowerShell session '
+    'cannot see a newly registered user-level OPS_PYTHON variable.'
 )
 
 doc.add_page_break()

@@ -466,16 +466,20 @@ function renderRL(rl){
 function renderPromptHistory(items){
   const host=$("prompt-history-list");
   if(!items.length){host.innerHTML='<div class="card"><p class="form-hint">No prompt history yet. Submit a prompt to create the first record.</p></div>';return;}
-  host.innerHTML=items.map(item=>{
+  host.innerHTML=items.map((item,i)=>{
     const reward=item.total_reward===null||item.total_reward===undefined?"pending":Number(item.total_reward).toFixed(2);
-    return`<div class="history-item">
+    const runId=item.run_id||"";
+    return`<div class="history-item" data-run-id="${escapeHtml(runId)}">
       <div class="history-item-top"><strong><span class="badge badge-${item.status||"idle"}">${item.status||"?"}</span></strong><span style="font-size:10.5px;color:var(--text-muted)">${escapeHtml((item.created_at||"").slice(0,19))}</span></div>
       <p>${escapeHtml(shortPrompt(item.prompt))}</p>
       <div class="history-item-meta"><span>Reward: ${reward}</span><span>Error: ${escapeHtml(item.error_type||"none")}</span><span>Policy: ${escapeHtml(item.policy_action||"pending")}</span></div>
       <div class="btn-group" style="margin-top:8px">
         <button class="btn btn-ghost btn-sm use-history-prompt">📋 Use</button>
         <button class="btn btn-primary btn-sm rerun-history-prompt">▶ Run Again</button>
-      </div></div>`;
+        <button class="btn btn-success btn-sm run-history-code" ${runId?"":"disabled title='No run_id'"}>▶ Run Code</button>
+      </div>
+      <div class="history-item-result" data-result-for="${escapeHtml(runId)}" style="display:none;margin-top:8px"></div>
+    </div>`;
   }).join("");
   host.querySelectorAll(".use-history-prompt").forEach((btn,i)=>{
     btn.addEventListener("click",()=>{
@@ -491,6 +495,33 @@ function renderPromptHistory(items){
       $("prompt-input").value=p;
       document.querySelector("[data-section='run']").click();
       submitPrompt(p);
+    });
+  });
+  host.querySelectorAll(".run-history-code").forEach((btn,i)=>{
+    btn.addEventListener("click",async()=>{
+      const runId=items[i].run_id||"";
+      if(!runId){toast("No run_id for this entry.","error");return;}
+      const resultEl=host.querySelector(`.history-item-result[data-result-for="${CSS.escape(runId)}"]`);
+      btn.disabled=true;btn.textContent="⏳ Running...";
+      if(resultEl){resultEl.style.display="block";resultEl.innerHTML='<p class="form-hint">Executing archived code...</p>';}
+      try{
+        const r=await fetch("/api/run-benchmark-code",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({case_id:runId})});
+        const data=await r.json();
+        if(resultEl){
+          const status=data.status||(data.ok?"succeeded":"failed");
+          resultEl.innerHTML=`
+            <div><span class="badge badge-${escapeHtml(status)}">${escapeHtml(status)}</span> <span style="font-size:11px;color:var(--text-muted)">${escapeHtml(data.message||"")}</span></div>
+            <details style="margin-top:6px"><summary style="cursor:pointer;font-size:11px">stdout / stderr</summary>
+              <pre style="font-size:10.5px;max-height:240px;overflow:auto;background:var(--bg-elevated);padding:6px;border-radius:4px;margin-top:4px">${escapeHtml((data.stdout||"")+(data.stderr?"\n--- stderr ---\n"+data.stderr:""))}</pre>
+            </details>`;
+        }
+        toast(data.ok?"Code executed successfully.":"Code execution failed.",data.ok?"success":"error");
+      }catch(err){
+        if(resultEl){resultEl.innerHTML=`<div class="badge badge-failed">network error</div> <span style="font-size:11px;color:var(--text-muted)">${escapeHtml(String(err))}</span>`;}
+        toast("Run failed: "+err,"error");
+      }finally{
+        btn.disabled=false;btn.textContent="▶ Run Code";
+      }
     });
   });
 }

@@ -345,6 +345,8 @@ def _snapshot_benchmark_state() -> dict[str, str | int | None]:
 def _resolve_ops_python() -> Path:
     candidates = [
         os.getenv("OPS_PYTHON"),
+        r"D:\Anaconda\envs\ops_clean\python.exe",
+        r"D:\Anaconda\envs\ops\python.exe",
         r"H:\ops\Scripts\python.exe",
         r"H:\codex\ops\Scripts\python.exe",
         r"H:\codex\.venv\Scripts\python.exe",
@@ -898,12 +900,17 @@ def _run_review_set_async(batch_id: str | None = None) -> None:
     )
 
 
-def _run_pipeline_async(prompt: str) -> None:
+def _run_pipeline_async(prompt: str, run_id: str | None = None) -> None:
     try:
         config = _apply_agent_llm_overrides(PipelineConfig())
         pipeline = StructuralModelingPipeline(config)
         pipeline.run(prompt)
     except Exception as exc:
+        if run_id:
+            try:
+                _archive_benchmark_artifacts(run_id)
+            except Exception:
+                pass
         _update_run_state(
             status="failed",
             message="Pipeline failed.",
@@ -912,6 +919,11 @@ def _run_pipeline_async(prompt: str) -> None:
         )
         _record_rl_event("pipeline_failed", {"error": str(exc)})
         return
+    if run_id:
+        try:
+            _archive_benchmark_artifacts(run_id)
+        except Exception:
+            pass
     _update_run_state(
         status="succeeded",
         message="Pipeline completed successfully.",
@@ -1564,7 +1576,7 @@ class MultiAgentWebHandler(BaseHTTPRequestHandler):
                 finished_at=None,
                 error=None,
             )
-            worker = threading.Thread(target=_run_pipeline_async, args=(prompt,), daemon=True)
+            worker = threading.Thread(target=_run_pipeline_async, args=(prompt, saved_at), daemon=True)
             worker.start()
             state = build_workspace_state()
             self._send_json(
